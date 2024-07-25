@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import knexConstructor, { Knex } from "knex";
 import { SessionData, Store } from "express-session";
 import {
@@ -23,6 +24,11 @@ interface Options {
   onDbCleanupError: (err: unknown) => void;
   tableName: string;
   sidFieldName: string;
+  pass: string;
+  salt: string;
+  iv: string;
+  encryptionkey: Buffer;
+  encryption: boolean;
 }
 
 export class ConnectSessionKnexStore extends Store {
@@ -32,7 +38,12 @@ export class ConnectSessionKnexStore extends Store {
 
   constructor(incomingOptions: Partial<Options>) {
     super();
-
+    let encryptionkey = Buffer.from("");
+    let encryption = false;
+    if(incomingOptions.pass && incomingOptions.iv) {
+      encryptionkey = crypto.scryptSync(incomingOptions.pass, incomingOptions.salt || "", 32);
+      encryption = true;
+    }
     const options = (this.options = {
       cleanupInterval: 60000,
       createTable: true,
@@ -41,6 +52,11 @@ export class ConnectSessionKnexStore extends Store {
       onDbCleanupError: (err: unknown) => {
         console.error(err);
       },
+      pass: "",
+      iv: "",
+      salt: "",
+      encryptionkey,
+      encryption,
       ...incomingOptions,
       knex:
         incomingOptions.knex ??
@@ -82,6 +98,21 @@ export class ConnectSessionKnexStore extends Store {
       }
     })();
   }
+  encrypt(sess: string) {
+    const { pass, iv, encryptionkey } = this.options;
+    const cipher = crypto.createCipheriv('aes-256-cbc', encryptionkey, Buffer.from(iv));
+    let crypted = cipher.update(sess, 'utf8', 'hex');
+    crypted += cipher.final('hex');
+    return crypted;
+  }
+
+  decrypt(sess: string): SessionData {
+    const { pass, iv, encryptionkey } = this.options;
+    const decipher = crypto.createDecipheriv('aes-256-cbc', encryptionkey, Buffer.from(iv));
+    let decrypted = decipher.update(sess, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return JSON.parse(decrypted);
+  }
 
   async get(
     sid: string,
@@ -104,6 +135,10 @@ export class ConnectSessionKnexStore extends Store {
         if (typeof session === "string") {
           session = JSON.parse(session);
         }
+        else if (response[0]?.sess && "encryptedData" in response[0].sess) {
+          const decrypted = this.decrypt(response[0].sess.encryptedData);
+          session = decrypted;
+        }
       }
       callback?.(null, session);
       return session;
@@ -120,8 +155,14 @@ export class ConnectSessionKnexStore extends Store {
       const { maxAge } = session.cookie;
       const now = new Date().getTime();
       const expired = maxAge ? now + maxAge : now + 86400000; // 86400000 = add one day
-      const sess = JSON.stringify(session);
-
+      let sess = JSON.stringify(session);
+      if( this.options.encryption) {
+        sess = JSON.stringify({
+          encryptedData: this.encrypt(
+            JSON.stringify(session),
+          ),
+        });
+      }
       const dbDate = dateAsISO(knex, expired);
 
       if (isSqlite3(knex)) {

@@ -30,6 +30,9 @@ See [Changelog.md](Changelog.md)
 - `knex` knex instance to use. Defaults to a new knex instance, using sqlite3 with a file named 'connect-session-knex.sqlite'
 - `tableName='sessions'` Tablename to use. Defaults to 'sessions'.
 - `sidFieldName='sid'` Field name in table to use for storing session ids. Defaults to 'sid'.
+- `pass='password'` (optional, if set and vi is set encryption will apply) password for database encryption.
+- `iv='1234567890123456'` (optional, if set and vi is set encryption will apply) initialization vector (must be 16 char).
+- `salt='salt'` (optional) salt key.
 
 If the table does not exist in the schema, this module will attempt to create it unless the `createTable` option is false.
 

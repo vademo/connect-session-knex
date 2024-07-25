@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ConnectSessionKnexStore = void 0;
+const node_crypto_1 = __importDefault(require("node:crypto"));
 const knex_1 = __importDefault(require("knex"));
 const express_session_1 = require("express-session");
 const utils_1 = require("./utils");
@@ -13,6 +14,12 @@ class ConnectSessionKnexStore extends express_session_1.Store {
     ready; // Schema created
     constructor(incomingOptions) {
         super();
+        let encryptionkey = Buffer.from("");
+        let encryption = false;
+        if (incomingOptions.pass && incomingOptions.iv) {
+            encryptionkey = node_crypto_1.default.scryptSync(incomingOptions.pass, incomingOptions.salt || "", 32);
+            encryption = true;
+        }
         const options = (this.options = {
             cleanupInterval: 60000,
             createTable: true,
@@ -21,6 +28,11 @@ class ConnectSessionKnexStore extends express_session_1.Store {
             onDbCleanupError: (err) => {
                 console.error(err);
             },
+            pass: "",
+            iv: "",
+            salt: "",
+            encryptionkey,
+            encryption,
             ...incomingOptions,
             knex: incomingOptions.knex ??
                 (0, knex_1.default)({
@@ -58,6 +70,20 @@ class ConnectSessionKnexStore extends express_session_1.Store {
             }
         })();
     }
+    encrypt(sess) {
+        const { pass, iv, encryptionkey } = this.options;
+        const cipher = node_crypto_1.default.createCipheriv('aes-256-cbc', encryptionkey, Buffer.from(iv));
+        let crypted = cipher.update(sess, 'utf8', 'hex');
+        crypted += cipher.final('hex');
+        return crypted;
+    }
+    decrypt(sess) {
+        const { pass, iv, encryptionkey } = this.options;
+        const decipher = node_crypto_1.default.createDecipheriv('aes-256-cbc', encryptionkey, Buffer.from(iv));
+        let decrypted = decipher.update(sess, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return JSON.parse(decrypted);
+    }
     async get(sid, callback) {
         try {
             await this.ready;
@@ -73,6 +99,10 @@ class ConnectSessionKnexStore extends express_session_1.Store {
                 session = response[0].sess;
                 if (typeof session === "string") {
                     session = JSON.parse(session);
+                }
+                else if (response[0]?.sess && "encryptedData" in response[0].sess) {
+                    const decrypted = this.decrypt(response[0].sess.encryptedData);
+                    session = decrypted;
                 }
             }
             callback?.(null, session);
@@ -90,7 +120,12 @@ class ConnectSessionKnexStore extends express_session_1.Store {
             const { maxAge } = session.cookie;
             const now = new Date().getTime();
             const expired = maxAge ? now + maxAge : now + 86400000; // 86400000 = add one day
-            const sess = JSON.stringify(session);
+            let sess = JSON.stringify(session);
+            if (this.options.encryption) {
+                sess = JSON.stringify({
+                    encryptedData: this.encrypt(JSON.stringify(session)),
+                });
+            }
             const dbDate = (0, utils_1.dateAsISO)(knex, expired);
             if ((0, utils_1.isSqlite3)(knex)) {
                 // sqlite optimized query
